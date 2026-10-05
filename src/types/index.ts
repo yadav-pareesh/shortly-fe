@@ -16,7 +16,12 @@ export interface ShortUrlResponse {
   qrCode: string;
 }
 
+export type SortOption = 'newest' | 'oldest' | 'clicks';
+
+export type ApiConnectionStatus = 'connected' | 'demo' | 'checking';
+
 export interface ThemeState {
   theme: 'light' | 'dark';
   setTheme: (theme: 'light' | 'dark') => void;
+  toggleTheme: () => void;
 }

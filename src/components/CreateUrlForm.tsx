@@ -3,92 +3,117 @@ import { useUrlStore } from '../store/useUrlStore';
 import { urlService } from '../services/urlService';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
-import type { CreateUrlRequest } from '../types';
+import type { CreateUrlRequest, ShortUrlResponse } from '../types';
 import { getApiErrorMessage } from '../lib/api';
-
-// ============================================================================
-// TYPES
-// ============================================================================
-export interface UrlResponse {
-  id: string;
-  shortCode: string;
-  shortUrl: string;
-  originalUrl: string;
-  createdAt: string;
-  expiresAt: string | null;
-  clicks: number;
-  customAlias: string | null;
-  qrCode: string;
-}
+import { normalizeUrl, isValidUrl, copyToClipboard } from '../lib/utils';
+import { toast } from '../store/useToastStore';
+import {
+  LinkIcon,
+  CopyIcon,
+  CheckIcon,
+  DownloadIcon,
+  ShareIcon,
+  ExternalLinkIcon,
+  CalendarIcon,
+  SparklesIcon,
+} from './Icons';
 
 type FieldErrors = Partial<Record<'originalUrl' | 'customAlias' | 'expiresAt', string>>;
 
-// ============================================================================
-// MAIN CONTAINER COMPONENT (Logic & State Management)
-// ============================================================================
 export const CreateUrlForm: React.FC = () => {
-  const [formData, setFormData] = useState<CreateUrlRequest>({ originalUrl: '', customAlias: '', expiresAt: '' });
-  const [loading, setLoading] = useState<boolean>(false);
+  const [originalUrl, setOriginalUrl] = useState('');
+  const [customAlias, setCustomAlias] = useState('');
+  const [expiresAt, setExpiresAt] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [createdUrl, setCreatedUrl] = useState<UrlResponse | null>(null);
-  const [copied, setCopied] = useState<boolean>(false);
-  
+  const [createdUrl, setCreatedUrl] = useState<ShortUrlResponse | null>(null);
+  const [copied, setCopied] = useState(false);
+
   const { addUrl } = useUrlStore();
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const { name, value } = e.target;
-    setFormData((prev) => ({ ...prev, [name]: value || undefined }));
-    if (name in fieldErrors) {
-      setFieldErrors((prev) => ({ ...prev, [name]: undefined }));
+  const handlePaste = async () => {
+    if (navigator?.clipboard?.readText) {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) {
+          setOriginalUrl(text.trim());
+          if (fieldErrors.originalUrl) {
+            setFieldErrors((prev) => ({ ...prev, originalUrl: undefined }));
+          }
+          toast.info('Pasted from clipboard');
+        }
+      } catch {
+        // User denied clipboard access or not in secure context
+      }
     }
-    if (error) setError(null);
+  };
+
+  const setExpiryPreset = (days: number) => {
+    const d = new Date();
+    d.setDate(d.getDate() + days);
+    // Format for datetime-local
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    const formatted = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    setExpiresAt(formatted);
+    if (fieldErrors.expiresAt) {
+      setFieldErrors((prev) => ({ ...prev, expiresAt: undefined }));
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    const nextFieldErrors: FieldErrors = {};
+    const nextErrors: FieldErrors = {};
 
-    try {
-      const parsedUrl = new URL(formData.originalUrl || '');
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        nextFieldErrors.originalUrl = 'Enter a URL that starts with http:// or https://.';
+    const cleanUrl = originalUrl.trim();
+    if (!cleanUrl) {
+      nextErrors.originalUrl = 'Please enter a URL to shorten.';
+    } else if (!isValidUrl(cleanUrl)) {
+      nextErrors.originalUrl = 'Please enter a valid URL (e.g. example.com or https://example.com).';
+    }
+
+    const cleanAlias = customAlias.trim();
+    if (cleanAlias && !/^[a-zA-Z0-9_-]+$/.test(cleanAlias)) {
+      nextErrors.customAlias = 'Only letters, numbers, hyphens, and underscores are allowed.';
+    }
+
+    if (expiresAt) {
+      const expiryTime = new Date(expiresAt).getTime();
+      if (isNaN(expiryTime) || expiryTime <= Date.now()) {
+        nextErrors.expiresAt = 'Expiration date must be in the future.';
       }
-    } catch {
-      nextFieldErrors.originalUrl = 'Enter a valid URL, such as https://example.com.';
     }
 
-    if (formData.customAlias && !/^[a-zA-Z0-9_-]+$/.test(formData.customAlias)) {
-      nextFieldErrors.customAlias = 'Use only letters, numbers, hyphens, and underscores.';
-    }
-
-    if (formData.expiresAt && new Date(formData.expiresAt).getTime() <= Date.now()) {
-      nextFieldErrors.expiresAt = 'Choose a date and time in the future.';
-    }
-
-    setFieldErrors(nextFieldErrors);
-    if (Object.keys(nextFieldErrors).length > 0) return;
+    setFieldErrors(nextErrors);
+    if (Object.keys(nextErrors).length > 0) return;
 
     setLoading(true);
     setError(null);
     setCopied(false);
 
     try {
-      const payload = {
-        originalUrl: formData.originalUrl,
-        ...(formData.customAlias ? { customAlias: formData.customAlias } : {}),
-        ...(formData.expiresAt ? { expiresAt: formData.expiresAt } : {}),
+      const payload: CreateUrlRequest = {
+        originalUrl: normalizeUrl(cleanUrl),
+        ...(cleanAlias ? { customAlias: cleanAlias } : {}),
+        ...(expiresAt ? { expiresAt } : {}),
       };
-      const url = await urlService.createShortUrl(payload);
-      addUrl(url);
-      setCreatedUrl(url);
-      setFormData({ originalUrl: '', customAlias: '', expiresAt: '' });
+
+      const result = await urlService.createShortUrl(payload);
+      addUrl(result.data);
+      setCreatedUrl(result.data);
+      setOriginalUrl('');
+      setCustomAlias('');
+      setExpiresAt('');
+      setShowAdvanced(false);
+      toast.success('Short link generated!');
     } catch (err: unknown) {
-      const errorMessage = getApiErrorMessage(err, 'Failed to create short URL. Please try again.');
-      if (errorMessage.toLowerCase().includes('custom alias')) {
-        setFieldErrors({ customAlias: 'This custom alias is already in use. Choose another one.' });
+      const msg = getApiErrorMessage(err, 'Failed to create short URL. Please try again.');
+      if (msg.toLowerCase().includes('alias')) {
+        setFieldErrors({ customAlias: msg });
       } else {
-        setError(errorMessage);
+        setError(msg);
       }
     } finally {
       setLoading(false);
@@ -97,67 +122,60 @@ export const CreateUrlForm: React.FC = () => {
 
   const handleCopy = async () => {
     if (!createdUrl) return;
-    
-    // Safety check for secure contexts (HTTPS)
-    if (!navigator?.clipboard) {
-      console.warn('Clipboard API is not available in this environment.');
-      return;
-    }
-
-    try {
-      await navigator.clipboard.writeText(createdUrl.shortUrl);
+    const ok = await copyToClipboard(createdUrl.shortUrl);
+    if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch (err: unknown) {
-      console.error('Failed to copy text: ', err);
+      toast.success('Copied to clipboard!');
+      setTimeout(() => setCopied(false), 2200);
     }
   };
 
   const handleDownloadQr = async () => {
     if (!createdUrl) return;
     try {
+      if (createdUrl.qrCode.startsWith('data:')) {
+        const link = document.createElement('a');
+        link.href = createdUrl.qrCode;
+        link.download = `shortly-${createdUrl.shortCode}.png`;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        toast.success('QR Code downloaded!');
+        return;
+      }
+
       const response = await fetch(createdUrl.qrCode);
       const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
+      const blobUrl = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
-      link.href = url;
-      link.download = `qr-${createdUrl.shortCode}.png`;
+      link.href = blobUrl;
+      link.download = `shortly-${createdUrl.shortCode}.png`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-    } catch (err: unknown) {
-      console.warn('CORS or network issue downloading QR, falling back to new tab.', err);
+      window.URL.revokeObjectURL(blobUrl);
+      toast.success('QR Code downloaded!');
+    } catch {
       window.open(createdUrl.qrCode, '_blank');
+      toast.info('QR Code opened in new tab');
     }
   };
 
   const handleShare = async () => {
     if (!createdUrl) return;
-    
     if (navigator?.share) {
       try {
-        try {
-          const response = await fetch(createdUrl.qrCode);
-          const blob = await response.blob();
-          const file = new File([blob], `qr-${createdUrl.shortCode}.png`, { type: 'image/png' });
-          await navigator.share({ title: 'My Short URL QR Code', files: [file] });
-          return;
-        } catch (fetchErr: unknown) {
-          console.log("Could not fetch image for native share, falling back to text link.");
-        }
-        
         await navigator.share({
-          title: 'Check out this link',
-          text: 'I shortened this link, check it out:',
+          title: `Short URL: ${createdUrl.shortUrl}`,
+          text: `Check out this link: ${createdUrl.shortUrl}`,
           url: createdUrl.shortUrl,
         });
-      } catch (err: unknown) {
-        console.error('Error sharing:', err);
+        toast.success('Shared successfully!');
+      } catch {
+        // User dismissed
       }
     } else {
-      handleCopy();
-      alert("Link copied to clipboard! Paste it to share.");
+      await handleCopy();
     }
   };
 
@@ -171,227 +189,393 @@ export const CreateUrlForm: React.FC = () => {
   return (
     <div className="w-full">
       {createdUrl ? (
-        <SuccessCard 
-          url={createdUrl} 
-          copied={copied} 
-          onCopy={handleCopy} 
-          onDownloadQr={handleDownloadQr} 
-          onShare={handleShare} 
-          onReset={handleReset} 
-        />
+        /* Result Success Card */
+        <div className="w-full animate-in fade-in zoom-in-95 duration-200">
+          <div className="mb-4 text-center">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+              <CheckIcon size={14} /> Link Created Successfully
+            </span>
+          </div>
+
+          <div className="rounded-xl border border-border/80 bg-card p-4 sm:p-6 shadow-sm">
+            {/* Short URL Box */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-2.5 rounded-xl border border-border/70 bg-muted/30 p-2.5 sm:p-3">
+              <a
+                href={createdUrl.shortUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="font-mono text-base sm:text-lg font-bold text-primary truncate hover:underline px-1"
+              >
+                {createdUrl.shortUrl}
+              </a>
+              <div className="flex items-center gap-2 shrink-0">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={copied ? 'default' : 'secondary'}
+                  className={`h-9 px-3.5 transition-all font-medium ${
+                    copied ? 'bg-emerald-600 hover:bg-emerald-700 text-white' : ''
+                  }`}
+                  onClick={handleCopy}
+                >
+                  {copied ? (
+                    <>
+                      <CheckIcon size={14} className="mr-1.5" /> Copied
+                    </>
+                  ) : (
+                    <>
+                      <CopyIcon size={14} className="mr-1.5" /> Copy
+                    </>
+                  )}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-9 px-3 text-muted-foreground hover:text-foreground"
+                  asChild
+                >
+                  <a
+                    href={createdUrl.shortUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title="Open short link"
+                  >
+                    <ExternalLinkIcon size={14} />
+                  </a>
+                </Button>
+              </div>
+            </div>
+
+            {/* Details + QR section */}
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
+              {/* QR Preview */}
+              <div className="flex flex-col items-center justify-center p-3 rounded-xl border border-border/50 bg-muted/10 text-center">
+                <div className="rounded-lg border border-border/70 bg-white p-2 shadow-xs">
+                  <img
+                    src={createdUrl.qrCode}
+                    alt="QR Code"
+                    className="h-24 w-24 object-contain"
+                  />
+                </div>
+                <div className="mt-2.5 flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs px-2 gap-1"
+                    onClick={handleDownloadQr}
+                  >
+                    <DownloadIcon size={12} /> PNG
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs px-2 gap-1"
+                    onClick={handleShare}
+                  >
+                    <ShareIcon size={12} /> Share
+                  </Button>
+                </div>
+              </div>
+
+              {/* Destination Meta */}
+              <div className="sm:col-span-2 flex flex-col justify-center space-y-2.5 text-xs sm:text-sm text-left px-1">
+                <div>
+                  <span className="block text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
+                    Destination
+                  </span>
+                  <a
+                    href={createdUrl.originalUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="line-clamp-2 break-all font-medium text-foreground hover:text-primary hover:underline"
+                  >
+                    {createdUrl.originalUrl}
+                  </a>
+                </div>
+
+                <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                  <div>
+                    <span className="font-semibold text-foreground">Created: </span>
+                    {new Date(createdUrl.createdAt).toLocaleDateString()}
+                  </div>
+                  {createdUrl.expiresAt && (
+                    <div>
+                      <span className="font-semibold text-foreground">Expires: </span>
+                      {new Date(createdUrl.expiresAt).toLocaleDateString()}
+                    </div>
+                  )}
+                  {createdUrl.customAlias && (
+                    <div>
+                      <span className="font-semibold text-foreground">Alias: </span>
+                      <span className="font-mono">{createdUrl.customAlias}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-4 flex justify-center">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={handleReset}
+              className="text-xs sm:text-sm text-muted-foreground hover:text-foreground"
+            >
+              Shorten another link &rarr;
+            </Button>
+          </div>
+        </div>
       ) : (
-        <UrlInputForm 
-          formData={formData} 
-          loading={loading} 
-          error={error} 
-          fieldErrors={fieldErrors}
-          onChange={handleChange} 
-          onSubmit={handleSubmit} 
-        />
+        /* Shorten Input Form */
+        <form onSubmit={handleSubmit} noValidate className="space-y-4 text-left">
+          {/* Main Input */}
+          <div className="space-y-1.5">
+            <label
+              htmlFor="originalUrl"
+              className="flex items-center justify-between text-xs sm:text-sm font-semibold text-foreground"
+            >
+              <span>Destination URL</span>
+              <span className="text-[11px] font-normal text-muted-foreground">
+                Paste any web address
+              </span>
+            </label>
+            <div className="relative flex items-center">
+              <span className="absolute left-3.5 text-muted-foreground pointer-events-none">
+                <LinkIcon size={18} />
+              </span>
+              <Input
+                id="originalUrl"
+                name="originalUrl"
+                type="url"
+                inputMode="url"
+                autoComplete="off"
+                placeholder="https://example.com/very/long/destination/url"
+                value={originalUrl}
+                onChange={(e) => {
+                  setOriginalUrl(e.target.value);
+                  if (fieldErrors.originalUrl) {
+                    setFieldErrors((prev) => ({ ...prev, originalUrl: undefined }));
+                  }
+                  if (error) setError(null);
+                }}
+                disabled={loading}
+                aria-invalid={Boolean(fieldErrors.originalUrl)}
+                aria-describedby={fieldErrors.originalUrl ? 'url-error' : undefined}
+                className={`h-12 pl-10 pr-20 text-sm sm:text-base bg-background transition-all ${
+                  fieldErrors.originalUrl
+                    ? 'border-destructive focus-visible:ring-destructive'
+                    : 'focus-visible:ring-primary'
+                }`}
+              />
+              <div className="absolute right-2 flex items-center">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={handlePaste}
+                  disabled={loading}
+                  className="h-8 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                  title="Paste from clipboard"
+                >
+                  Paste
+                </Button>
+              </div>
+            </div>
+            {fieldErrors.originalUrl && (
+              <p id="url-error" role="alert" className="text-xs text-destructive mt-1 font-medium">
+                {fieldErrors.originalUrl}
+              </p>
+            )}
+          </div>
+
+          {/* Advanced toggle */}
+          <div>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-primary hover:underline transition-colors"
+            >
+              <SparklesIcon size={13} />
+              <span>{showAdvanced ? 'Hide advanced options' : 'Customize alias & expiration date'}</span>
+              <span className="text-muted-foreground">({showAdvanced ? '−' : '+'})</span>
+            </button>
+          </div>
+
+          {/* Advanced options container */}
+          {showAdvanced && (
+            <div className="space-y-4 rounded-xl border border-border/60 bg-muted/20 p-4 transition-all animate-in fade-in slide-in-from-top-2 duration-200">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {/* Custom Alias */}
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="customAlias"
+                    className="block text-xs font-semibold text-foreground"
+                  >
+                    Custom Alias <span className="font-normal text-muted-foreground">(Optional)</span>
+                  </label>
+                  <div className="relative flex items-center">
+                    <span className="absolute left-3 text-xs font-medium text-muted-foreground select-none">
+                      /
+                    </span>
+                    <Input
+                      id="customAlias"
+                      name="customAlias"
+                      type="text"
+                      placeholder="my-custom-link"
+                      value={customAlias}
+                      onChange={(e) => {
+                        setCustomAlias(e.target.value);
+                        if (fieldErrors.customAlias) {
+                          setFieldErrors((prev) => ({ ...prev, customAlias: undefined }));
+                        }
+                      }}
+                      disabled={loading}
+                      aria-invalid={Boolean(fieldErrors.customAlias)}
+                      aria-describedby={fieldErrors.customAlias ? 'alias-error' : undefined}
+                      className={`h-10 pl-6 text-xs sm:text-sm bg-background ${
+                        fieldErrors.customAlias ? 'border-destructive' : ''
+                      }`}
+                    />
+                  </div>
+                  {fieldErrors.customAlias ? (
+                    <p id="alias-error" role="alert" className="text-xs text-destructive">
+                      {fieldErrors.customAlias}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">
+                      Letters, numbers, hyphens only.
+                    </p>
+                  )}
+                </div>
+
+                {/* Expiration Date */}
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="expiresAt"
+                    className="block text-xs font-semibold text-foreground"
+                  >
+                    Expiration Date <span className="font-normal text-muted-foreground">(Optional)</span>
+                  </label>
+                  <div className="relative flex items-center">
+                    <span className="absolute left-3 text-muted-foreground pointer-events-none">
+                      <CalendarIcon size={14} />
+                    </span>
+                    <Input
+                      id="expiresAt"
+                      name="expiresAt"
+                      type="datetime-local"
+                      min={new Date().toISOString().slice(0, 16)}
+                      value={expiresAt}
+                      onChange={(e) => {
+                        setExpiresAt(e.target.value);
+                        if (fieldErrors.expiresAt) {
+                          setFieldErrors((prev) => ({ ...prev, expiresAt: undefined }));
+                        }
+                      }}
+                      disabled={loading}
+                      aria-invalid={Boolean(fieldErrors.expiresAt)}
+                      aria-describedby={fieldErrors.expiresAt ? 'expiry-error' : undefined}
+                      className={`h-10 pl-9 text-xs sm:text-sm bg-background ${
+                        fieldErrors.expiresAt ? 'border-destructive' : ''
+                      }`}
+                    />
+                  </div>
+                  {fieldErrors.expiresAt && (
+                    <p id="expiry-error" role="alert" className="text-xs text-destructive">
+                      {fieldErrors.expiresAt}
+                    </p>
+                  )}
+
+                  {/* Expiry Presets */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[10px] text-muted-foreground">Presets:</span>
+                    <button
+                      type="button"
+                      onClick={() => setExpiryPreset(1)}
+                      className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium hover:bg-muted/80 text-foreground transition-colors"
+                    >
+                      +24h
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExpiryPreset(7)}
+                      className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium hover:bg-muted/80 text-foreground transition-colors"
+                    >
+                      +7d
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setExpiryPreset(30)}
+                      className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium hover:bg-muted/80 text-foreground transition-colors"
+                    >
+                      +30d
+                    </button>
+                    {expiresAt && (
+                      <button
+                        type="button"
+                        onClick={() => setExpiresAt('')}
+                        className="rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive hover:bg-destructive/20 transition-colors"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Form-level Error Message */}
+          {error && (
+            <div
+              role="alert"
+              className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs sm:text-sm text-destructive"
+            >
+              <span>{error}</span>
+            </div>
+          )}
+
+          {/* Submit Action */}
+          <Button
+            type="submit"
+            disabled={loading}
+            className="h-11 w-full text-sm sm:text-base font-semibold shadow-md transition-all active:scale-[0.99]"
+          >
+            {loading ? (
+              <span className="flex items-center gap-2">
+                <svg
+                  className="h-4 w-4 animate-spin text-current"
+                  xmlns="http://www.w3.org/2000/svg"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                >
+                  <circle
+                    className="opacity-25"
+                    cx="12"
+                    cy="12"
+                    r="10"
+                    stroke="currentColor"
+                    strokeWidth="4"
+                  />
+                  <path
+                    className="opacity-75"
+                    fill="currentColor"
+                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                  />
+                </svg>
+                Shortening URL...
+              </span>
+            ) : (
+              'Shorten URL'
+            )}
+          </Button>
+        </form>
       )}
     </div>
   );
 };
-
-// ============================================================================
-// PRESENTER COMPONENT 1: Form UI
-// ============================================================================
-interface UrlInputFormProps {
-  formData: CreateUrlRequest;
-  loading: boolean;
-  error: string | null;
-  fieldErrors: FieldErrors;
-  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  onSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
-}
-
-const UrlInputForm: React.FC<UrlInputFormProps> = ({ formData, loading, error, fieldErrors, onChange, onSubmit }) => (
-  <div className="animate-in fade-in duration-300">
-    <div className="mb-4 text-center">
-      <h2 className="text-xl sm:text-2xl font-semibold tracking-tight text-foreground">
-        Create Short URL
-      </h2>
-    </div>
-
-    <form onSubmit={onSubmit} noValidate className="space-y-4 text-left">
-      {/* Original URL */}
-      <div className="space-y-1.5">
-        <label htmlFor="originalUrl" className="text-sm font-medium leading-none">
-          Original URL <span className="text-destructive">*</span>
-        </label>
-        <Input
-          id="originalUrl"
-          name="originalUrl"
-          type="url"
-          placeholder="https://example.com/very/long/url"
-          value={formData.originalUrl}
-          onChange={onChange}
-          required
-          disabled={loading}
-          aria-invalid={Boolean(fieldErrors.originalUrl)}
-          aria-describedby={fieldErrors.originalUrl ? 'originalUrl-error' : undefined}
-          className={`h-10 bg-background ${fieldErrors.originalUrl ? 'border-destructive focus-visible:ring-destructive' : ''}`}
-        />
-        {fieldErrors.originalUrl && <p id="originalUrl-error" role="alert" className="text-xs text-destructive">{fieldErrors.originalUrl}</p>}
-      </div>
-
-      {/* Grid Layout for compact vertical spacing on desktop */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        {/* Custom Alias */}
-        <div className="space-y-1.5">
-          <label htmlFor="customAlias" className="text-sm font-medium leading-none">
-            Custom Alias <span className="text-xs font-normal text-muted-foreground">(Optional)</span>
-          </label>
-          <Input
-            id="customAlias"
-            name="customAlias"
-            type="text"
-            placeholder="my-link"
-            value={formData.customAlias || ''}
-            onChange={onChange}
-            disabled={loading}
-            pattern="[a-zA-Z0-9_-]+"
-            aria-invalid={Boolean(fieldErrors.customAlias)}
-            aria-describedby={fieldErrors.customAlias ? 'customAlias-error' : undefined}
-            className={`h-10 bg-background ${fieldErrors.customAlias ? 'border-destructive focus-visible:ring-destructive' : ''}`}
-          />
-          {fieldErrors.customAlias ? (
-            <p id="customAlias-error" role="alert" className="text-xs leading-tight text-destructive">{fieldErrors.customAlias}</p>
-          ) : (
-            <p className="text-[11px] leading-tight text-muted-foreground">Letters, numbers, hyphens, underscores.</p>
-          )}
-        </div>
-
-        {/* Expiration Date */}
-        <div className="space-y-1.5">
-          <label htmlFor="expiresAt" className="text-sm font-medium leading-none">
-            Expiration Date <span className="text-destructive">*</span>
-          </label>
-          <Input
-            id="expiresAt"
-            name="expiresAt"
-            type="datetime-local"
-            value={formData.expiresAt || ''}
-            onChange={onChange}
-            required
-            disabled={loading}
-            aria-invalid={Boolean(fieldErrors.expiresAt)}
-            aria-describedby={fieldErrors.expiresAt ? 'expiresAt-error' : undefined}
-            className={`h-10 bg-background ${fieldErrors.expiresAt ? 'border-destructive focus-visible:ring-destructive' : ''}`}
-          />
-          {fieldErrors.expiresAt && <p id="expiresAt-error" role="alert" className="text-xs text-destructive">{fieldErrors.expiresAt}</p>}
-        </div>
-      </div>
-
-      {/* Error Message */}
-      {error && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/50 bg-destructive/10 p-2.5 text-sm text-destructive">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          {error}
-        </div>
-      )}
-
-      {/* Submit Button */}
-      <div className="pt-2">
-        <Button type="submit" className="h-10 w-full font-medium" disabled={loading}>
-          {loading ? (
-            <span className="flex items-center gap-2">
-              <svg className="h-4 w-4 animate-spin text-current" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-              </svg>
-              Creating...
-            </span>
-          ) : 'Shorten URL'}
-        </Button>
-      </div>
-    </form>
-  </div>
-);
-
-// ============================================================================
-// PRESENTER COMPONENT 2: Success UI
-// ============================================================================
-interface SuccessCardProps {
-  url: UrlResponse;
-  copied: boolean;
-  onCopy: () => void;
-  onDownloadQr: () => void;
-  onShare: () => void;
-  onReset: () => void;
-}
-
-const SuccessCard: React.FC<SuccessCardProps> = ({ url, copied, onCopy, onDownloadQr, onShare, onReset }) => (
-  <div className="w-full animate-in fade-in zoom-in-95 duration-300 text-left">
-    <div className="mb-4 flex flex-col items-center justify-center space-y-1 text-center">
-      <div className="mb-1 flex h-10 w-10 items-center justify-center rounded-full bg-green-500/10">
-        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-green-600 dark:text-green-400">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-          <polyline points="22 4 12 14.01 9 11.01" />
-        </svg>
-      </div>
-      <h2 className="text-xl font-semibold tracking-tight text-foreground">URL Shortened!</h2>
-    </div>
-
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
-      {/* Shortened URL Row */}
-      <div className="mb-4 flex items-center justify-between gap-3 rounded-lg border bg-muted/30 p-2">
-        <a href={url.shortUrl} target="_blank" rel="noopener noreferrer" className="truncate px-2 text-base font-medium text-primary hover:underline">
-          {url.shortUrl}
-        </a>
-        <Button type="button" size="sm" variant={copied ? "default" : "secondary"} className={`h-8 shrink-0 transition-all ${copied ? "bg-green-600 text-white hover:bg-green-700" : ""}`} onClick={onCopy}>
-          {copied ? (
-            <><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5"><polyline points="20 6 9 17 4 12" /></svg> Copied</>
-          ) : (
-            <><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5"><rect width="14" height="14" x="8" y="8" rx="2" ry="2" /><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2" /></svg> Copy</>
-          )}
-        </Button>
-      </div>
-
-      {/* Details & QR Row */}
-      <div className="flex items-center gap-4">
-        {/* QR Section */}
-        <div className="flex shrink-0 flex-col gap-2">
-          <div className="rounded-md border bg-white p-1.5 shadow-sm">
-            <img src={url.qrCode} alt="QR Code" className="h-20 w-20 object-contain" />
-          </div>
-          <div className="flex w-full justify-between gap-1">
-            <Button variant="outline" size="icon" className="h-7 w-7 rounded-md" onClick={onDownloadQr} title="Save QR">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>
-            </Button>
-            <Button variant="outline" size="icon" className="h-7 w-7 rounded-md" onClick={onShare} title="Share QR">
-              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></svg>
-            </Button>
-          </div>
-        </div>
-        
-        {/* URL Meta Section */}
-        <div className="flex min-w-0 flex-1 flex-col gap-2 text-[13px]">
-          <div>
-            <span className="block font-medium text-foreground">Destination:</span>
-            <a href={url.originalUrl} target="_blank" rel="noopener noreferrer" className="line-clamp-1 break-all text-muted-foreground hover:text-foreground hover:underline">
-              {url.originalUrl}
-            </a>
-          </div>
-          {url.expiresAt && (
-            <div>
-              <span className="block font-medium text-foreground">Expires:</span>
-              <span className="text-muted-foreground">
-                {new Date(url.expiresAt).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })}
-              </span>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-
-    <div className="mt-4 flex justify-center">
-      <Button variant="ghost" size="sm" onClick={onReset} className="text-muted-foreground hover:text-foreground">
-        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="mr-1.5"><path d="M5 12h14" /><path d="M12 5l-7 7 7 7" /></svg>
-        Shorten another URL
-      </Button>
-    </div>
-  </div>
-);

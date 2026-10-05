@@ -3,23 +3,38 @@ import type { ThemeState } from '../types';
 
 const getInitialTheme = (): 'light' | 'dark' => {
   if (typeof window === 'undefined') return 'light';
-  const storedTheme = localStorage.getItem('theme');
-  return storedTheme === 'dark' ? 'dark' : 'light';
+  const stored = localStorage.getItem('theme');
+  if (stored === 'dark' || stored === 'light') {
+    return stored;
+  }
+  return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 };
 
-export const useThemeStore = create<ThemeState>((set) => {
-  const initialTheme = getInitialTheme();
-
-  if (typeof document !== 'undefined') {
-    document.documentElement.classList.toggle('dark', initialTheme === 'dark');
+const applyThemeToDom = (theme: 'light' | 'dark') => {
+  if (typeof document === 'undefined') return;
+  const root = document.documentElement;
+  if (theme === 'dark') {
+    root.classList.add('dark');
+  } else {
+    root.classList.remove('dark');
   }
+};
 
-  return {
-    theme: initialTheme,
-    setTheme: (theme: 'light' | 'dark') => {
-      localStorage.setItem('theme', theme);
-      document.documentElement.classList.toggle('dark', theme === 'dark');
-      set({ theme });
-    },
-  };
-});
+const initialTheme = getInitialTheme();
+applyThemeToDom(initialTheme);
+
+export const useThemeStore = create<ThemeState>((set, get) => ({
+  theme: initialTheme,
+  setTheme: (theme: 'light' | 'dark') => {
+    localStorage.setItem('theme', theme);
+    applyThemeToDom(theme);
+    set({ theme });
+  },
+  toggleTheme: () => {
+    const current = get().theme;
+    const nextTheme = current === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('theme', nextTheme);
+    applyThemeToDom(nextTheme);
+    set({ theme: nextTheme });
+  },
+}));

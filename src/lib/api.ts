@@ -4,12 +4,15 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  timeout: 8000,
   headers: {
     'Content-Type': 'application/json',
   },
 });
 
-export const getApiErrorMessage = (error: unknown, fallback = 'Something went wrong. Please try again.') => {
+export const getApiErrorMessage = (error: unknown, fallback = 'Something went wrong. Please try again.'): string => {
+  if (typeof error === 'string') return error;
+
   const axiosError = error as {
     response?: {
       status?: number;
@@ -44,31 +47,31 @@ export const getApiErrorMessage = (error: unknown, fallback = 'Something went wr
   }
 
   if (axiosError?.code === 'ERR_NETWORK') {
-    return 'Unable to reach the server. Please check your internet connection and try again.';
+    return 'Unable to reach the server. Make sure the backend server is running.';
   }
 
   if (axiosError?.code === 'ECONNABORTED') {
-    return 'The request took too long. Please try again.';
+    return 'The request timed out. Please try again.';
   }
 
   if (axiosError?.response?.status === 400) {
     return 'Please check your details and try again.';
   }
 
-  if (axiosError?.response?.status === 401) {
-    return 'Your session has expired. Please refresh and try again.';
+  if (axiosError?.response?.status === 404) {
+    return 'The requested resource was not found.';
   }
 
-  if (axiosError?.response?.status === 404) {
-    return 'The requested page was not found.';
+  if (axiosError?.response?.status === 409) {
+    return 'This custom alias is already in use. Please pick another one.';
   }
 
   if (axiosError?.response?.status === 429) {
-    return 'Too many attempts. Please wait a moment and try again.';
+    return 'Too many requests. Please wait a moment and try again.';
   }
 
   if (axiosError?.response?.status === 500) {
-    return 'Something went wrong on our side. Please try again in a few moments.';
+    return 'Internal server error. Please try again shortly.';
   }
 
   if (typeof axiosError?.message === 'string' && axiosError.message.trim()) {
@@ -77,22 +80,5 @@ export const getApiErrorMessage = (error: unknown, fallback = 'Something went wr
 
   return fallback;
 };
-
-// Request interceptor
-api.interceptors.request.use(
-  (config) => config,
-  (error) => Promise.reject(error)
-);
-
-// Response interceptor
-api.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle unauthorized
-    }
-    return Promise.reject(error);
-  }
-);
 
 export default api;
